@@ -7,7 +7,9 @@ source "http://rubygems.org"
 # Include everything needed to run rake, tests, features, etc.
 #
 
-gem "httparty", ">= 0.7"
+gem "httparty"
+gem "activesupport"
+gem "activemodel"
 
 group :development do
   gem "rspec"
@@ -15,4 +17,5 @@ group :development do
   gem "bundler", "~> 1.0.0"
   gem "jeweler", "~> 1.5.2"
   gem "rcov", ">= 0"
+  gem "ruby-debug"
 end
