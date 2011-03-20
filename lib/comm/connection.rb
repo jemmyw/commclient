@@ -1,20 +1,74 @@
 require 'rubygems'
+require 'uri'
 require 'httparty'
+require 'active_model'
 require 'active_support'
 require 'active_support/hash_with_indifferent_access'
 require 'active_support/inflector'
+require 'active_support/core_ext/kernel/singleton_class'
 
 module Comm
-  module Resource
+  def get_class(name)
+    "Comm::#{name.to_s.singularize.classify}".constantize rescue nil 
+  end
+  module_function :get_class
+
+  module ResourceArray
     extend ActiveSupport::Concern
 
     included do
+      attr_accessor :klass, :path, :connection
+    end
+
+    def path=(value)
+      @path = value
+
+      each do |resource|
+        resource.collection_path = value
+      end
+    end
+
+    def connection=(value)
+      @connection = value
+
+      each do |resource|
+        resource.connection = value
+      end
+    end
+
+    def find(*args)
+      if block_given?
+        super
+      else
+        value = URI.encode(args.first)
+        
+        connection.get("#{path}/#{value}", klass, {}).tap do |resource|
+          resource.collection_path = path if resource.respond_to?(:collection_path=)
+        end
+      end
+    end
+
+    def create(attributes = {})
+      klass.new(attributes).tap do |object|
+        object.collection_path = path
+        object.connection = connection
+        object.save
+      end
+    end
+  end
+
+  module Resource
+    extend ActiveSupport::Concern
+    include ActiveModel::Validations
+
+    included do
       attr_reader :attributes
+      attr_accessor :collection_path, :connection
+      class_eval "undef id"
     end
 
     def initialize(attributes = {})
-      @path = attributes.delete(:path)
-      @client = attributes.delete(:client)
+      @connection = attributes.delete(:connection)
       @attributes = ActiveSupport::HashWithIndifferentAccess.new(attributes)
     end
 
@@ -26,6 +80,26 @@ module Comm
       def collection_name
         resource_name.pluralize
       end
+
+      def collection_path
+        "/#{collection_name}"
+      end
+
+      def create(attributes = {})
+        new(attributes).save
+      end
+    end
+
+    def resource_path
+      "/#{self.class.collection_name}/#{id}"
+    end
+
+    def collection_path
+      @collection_path ||= self.class.collection_path
+    end
+
+    def has_attribute?(name)
+      @attributes.has_key?(name)
     end
 
     def read_attribute(name)
@@ -44,13 +118,52 @@ module Comm
       write_attribute(name, value)
     end
 
+    def new_record?
+      !has_attribute?(:id)
+    end
+
+    def save
+      new_record? ? create : update
+    end
+
+    def reload
+      unless new_record?
+        @attributes = connection.get(resource_path, self.class, {}).attributes
+      end
+
+      self
+    end
+
     def method_missing(method, *args)
       method_name = method.to_s
       if attributes.include?(method_name)
         read_attribute(method_name)
+      elsif klass = Comm.get_class(method)
+        connection.get("#{resource_path}/#{method}", klass, {})
       else
         super
       end
+    end
+
+    private
+
+    def create
+      data = connection.post(collection_path, self.class, attributes)
+
+      if data.success?
+        @attributes = HashWithIndifferentAccess.new(data)
+        true
+      else
+        data.each do |key, value|
+          errors.add(key, value)
+        end
+
+        false
+      end
+    end
+
+    def update
+      puts "updating..."
     end
   end
 
@@ -74,22 +187,36 @@ module Comm
       end
     end
 
+    def post(path, klass, attributes, options = {})
+      options[:body] = {klass.resource_name => attributes.to_hash}
+      self.class.post("#{path}.json", options)
+    end
+
     def get(path, klass, options = {})
       data = self.class.get("#{path}.json", options)
 
       if data.has_key?(klass.collection_name)
-        data[klass.collection_name].map{|data| build_resource(klass, path, data) }
+        build_array(klass, data[klass.collection_name], path)
       else
-        build_resource(klass, path, data)
+        build_resource(klass, data)
       end
     end
 
     private
 
-    def build_resource(klass, path, data)
-      data[:path] = path
-      data[:client] = self
-      klass.new(data)
+    def build_array(klass, data, path)
+      data.map{|data| build_resource(klass, data)}.tap do |ary|
+        ary.singleton_class.class_eval "include Comm::ResourceArray"
+        ary.klass = klass
+        ary.path = path
+        ary.connection = self
+      end
+    end
+
+    def build_resource(klass, data)
+      klass.new(data).tap do |resource|
+        resource.connection = self
+      end
     end
   end
 end
