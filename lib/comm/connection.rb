@@ -13,6 +13,47 @@ module Comm
   end
   module_function :get_class
 
+  class ProxyArray
+    def initialize(*args, &block)
+      @loaded = false
+      @array = []
+      @block = block
+      @arguments = args
+    end
+
+    def method_missing(method, *args)
+      if @array.respond_to?(method)
+        define_array_method(method)
+        send(method, *args)
+      else
+        super
+      end
+    end
+
+    def loaded?
+      @loaded
+    end
+
+    def load
+      unless loaded?
+        @array = @block.call(*@arguments)
+        @loaded = true
+        @block = nil
+      end
+    end
+
+    private
+
+    def define_array_method(symbol)
+      singleton_class.class_eval %Q{
+        def #{symbol}(*args)
+          load unless loaded?
+          @array.send(:#{symbol}, *args)
+        end
+      }
+    end
+  end
+
   module ResourceArray
     extend ActiveSupport::Concern
 
